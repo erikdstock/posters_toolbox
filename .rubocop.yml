@@ -1,0 +1,5 @@
+inherit_from:
+  - node_modules/@prettier/plugin-ruby/rubocop.yml
+
+Style/Documentation:
+  Enabled: false

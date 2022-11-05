@@ -12,4 +12,5 @@ require "posters_toolbox"
 # Pry.start
 
 require "irb"
+$app = PostersToolbox::App.new
 IRB.start(__FILE__)
