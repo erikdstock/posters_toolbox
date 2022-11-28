@@ -10,7 +10,6 @@ require "posters_toolbox"
 # (If you use this, don't forget to add pry to your Gemfile!)
 # require "pry"
 # Pry.start
-
+PostersToolbox.load_app!
 require "irb"
-$app = PostersToolbox::App.new
 IRB.start(__FILE__)

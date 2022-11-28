@@ -17,3 +17,5 @@ gem "syntax_tree-haml", "~> 2.0", :group => :development
 gem "syntax_tree-rbs", "~> 0.5.1", :group => :development
 
 gem "dotenv", "~> 2.8", :group => :development
+gem 'optparse'
+gem 'pry'

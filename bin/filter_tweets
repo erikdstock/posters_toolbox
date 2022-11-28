@@ -1,0 +1,216 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "bundler/setup"
+require "posters_toolbox"
+require "optparse"
+require "csv"
+
+require "pry"
+
+PostersToolbox.load_app!
+
+# default options
+@options = {
+  delete_selected: false,
+  ignore_qts: false,
+  ignore_replies: false,
+  delete_rts: true,
+  min_likes: 0,
+  max_likes: Float::INFINITY,
+  min_age_days: nil,
+  min_engagement: nil,
+  max_engagement: nil,
+}
+@result = []
+
+@now = Time.new
+
+OptionParser
+  .new do |opts|
+    opts.on(
+      "-o[OUTPUT]",
+      "--output=[OUTPUT]",
+      String,
+      "Output results to file",
+    ) do |o|
+      @options[:output] = File.absolute_path(File.join(__dir__, "..", o))
+    end
+
+    opts.on("--delete", TrueClass, "Delete tweets matching filter") do |d|
+      @options[:delete_selected] = d
+    end
+
+    opts.on(
+      "-l[MIN_LIKES]",
+      "--min-likes=[MIN_LIKES]",
+      Integer,
+      "select tweets with >= likes",
+    ) { |n| @options[:min_likes] = n }
+
+    opts.on(
+      "-L[MAX_LIKES]",
+      "--min-likes=[MAX_LIKES]",
+      Integer,
+      "select tweets with <= likes",
+    ) { |n| @options[:max_likes] = n }
+
+    opts.on(
+      "-e[MIN_ENGAGEMENT]",
+      "--min-engagement=[MIN_ENGAGEMENT]",
+      Integer,
+      "select tweets with >= engagement",
+    ) { |n| @options[:min_engagement] = n }
+
+    opts.on(
+      "-E[MAX_ENGAGEMENT]",
+      "--max-engagement=[MAX_ENGAGEMENT]",
+      Integer,
+      "select tweets with <= engagement",
+    ) { |n| @options[:max_engagement] = n }
+
+    opts.on(
+      "-d[DAYS]",
+      "--min-days=[DAYS]",
+      Integer,
+      "Select tweets at least DAYS old",
+    ) { |d| @options[:min_days] = @now - (d * 3600 * 24) }
+
+    opts.on("--ignore-quote-tweets", TrueClass, "ignore quote tweets") do |b|
+      @options[:ignore_qts] = b
+    end
+
+    opts.on("--ignore-replies", TrueClass, "ignore reply tweets") do |b|
+      @options[:ignore_replies] = b
+    end
+
+    opts.on(
+      "--preserve-threads",
+      TrueClass,
+      "If one tweet in a thread is selected for deletion, save the whole thread",
+    ) do |pt|
+      raise ArgumentError, "Not implemented" if @options[:delete_selected] && pt
+    end
+  end
+  .parse!
+p @options
+
+class TweetReader < SimpleDelegator
+  def to_h
+    __getobj__.send(:to_h).merge(
+      {
+        quote_count: quote_count,
+        reply_count: reply_count,
+        retweet_count: retweet_count,
+      },
+    )
+  end
+
+  def engagement_count
+    retweet? ? 0 : favorite_count + quote_count + reply_count + retweet_count
+  end
+
+  def reply_count
+    delegate_to_actual_with_default(:reply_count, 0)
+  end
+  def quote_count
+    delegate_to_actual_with_default(:quote_count, 0)
+  end
+  def retweet_count
+    delegate_to_actual_with_default(:retweet_count, 0)
+  end
+
+  def delete!
+    $app.client.destroy_status(id)
+  end
+
+  private
+
+  def delegate_to_actual_with_default(msg, default)
+    actual = __getobj__.send(msg)
+    actual.nil? || actual.is_a?(Twitter::NullObject) ? default : actual
+  end
+end
+
+def filter_tweets(all_tweets)
+  initial_tweets = all_tweets.map { |t| TweetReader.new(t) }
+
+  if @options[:min_days]
+    puts "selecting tweets older than #{@options[:min_days]}"
+    initial_tweets.select! { |t| t.created_at < @options[:min_days] }
+  end
+
+  retweets, tweets = initial_tweets.partition(&:retweet?)
+
+  engagement_requirements = @options.values_at(:min_engagement, :max_engagement)
+  min_engagement, max_engagement = engagement_requirements
+
+  filtered_tweets =
+    tweets.map do |t|
+      next if @options[:ignore_replies] && t.reply?
+      next if @options[:ignore_qts] && t.quote?
+
+      if engagement_requirements.any?
+        if (min_engagement.nil? || t.engagement_count >= min_engagement) &&
+             (max_engagement.nil? || t.engagement_count <= max_engagement)
+          next
+        end
+      else
+        if t.favorite_count < @options[:min_likes] ||
+             t.favorite_count > @options[:max_likes]
+          next
+        end
+      end
+      t
+    end
+
+  [filtered_tweets.compact, retweets]
+end
+
+# Delete tweets if requested, otherwise just add them to results
+def process_result!(tweets, retweets)
+  begin
+    [tweets, retweets].flatten.each do |t|
+      tweet = TweetReader.new(t)
+      @result << tweet
+      if @options[:delete_selected]
+        tweet.delete!
+        puts "deleted #{t.full_text[0, 10]} - #{t.created_at.strftime("%y-%m-%d")}"
+      end
+    end
+  rescue Twitter::Error => e
+    puts "ERROR:\n#{e.full_message}"
+  end
+end
+
+require "csv"
+# Write csv. maybe write to temp file and then move it to output file instead after success?
+def write_csv!(result, file_path)
+  json = result.map(&:to_h)
+  keys = json.map(&:keys).inject([], &:|)
+  rows = json.map { |data| data.values_at(*keys) }
+  CSV.open(file_path, "w") do |csv|
+    csv << keys
+    rows.each { |r| csv << r }
+  end
+end
+
+begin
+  all_tweets = $app.get_all_tweets
+
+  filtered_tweets, retweets = filter_tweets(all_tweets)
+  process_result!(filtered_tweets, retweets)
+
+  write_csv!(filtered_tweets, @options[:output]) if @options[:output]
+
+  # puts @result.map(&:to_h)
+  puts @options
+rescue => e
+  puts e
+  binding.pry
+end
+
+# puts @result
+# puts @result.count
+# require "irb"
+# IRB.start(__FILE__)
